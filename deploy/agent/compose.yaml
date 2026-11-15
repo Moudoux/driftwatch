@@ -1,0 +1,37 @@
+# Driftwatch agent. The admin UI generates this file (and its .env) for you
+# with a fresh certificate; this copy is for reference.
+
+services:
+  driftwatch-tailscale:
+    image: tailscale/tailscale:latest
+    hostname: driftwatch-nas
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY}
+      TS_HOSTNAME: driftwatch-nas
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+    volumes:
+      - driftwatch-tailscale:/var/lib/tailscale
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+
+  driftwatch-agent:
+    image: ghcr.io/moudoux/driftwatch:latest
+    network_mode: service:driftwatch-tailscale
+    depends_on:
+      - driftwatch-tailscale
+    environment:
+      DRIFTWATCH_MODE: agent
+      DRIFTWATCH_LISTEN: 0.0.0.0:7443
+      DRIFTWATCH_CA: ${DRIFTWATCH_CA}
+      DRIFTWATCH_CERT: ${DRIFTWATCH_CERT}
+      DRIFTWATCH_KEY: ${DRIFTWATCH_KEY}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+volumes:
+  driftwatch-tailscale:
