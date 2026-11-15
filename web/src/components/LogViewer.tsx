@@ -1,26 +1,22 @@
-import { useVirtualizer } from "@tanstack/react-virtual";
-import {
-  ArrowDown,
-  Clock,
-  Download,
-  Eraser,
-  Layers,
-  Pause,
-  Play,
-  Search,
-  Server,
-  TriangleAlert,
-  WrapText,
-} from "lucide-react";
+import { ArrowDown, Clock, Download, Eraser, Pause, Play, Search, WrapText } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { parseAnsi, stripAnsi } from "../lib/ansi";
 import { logsUrl } from "../lib/api";
 import { isoTime, logTime, stateColor, tagColor } from "../lib/format";
-import type { ContainerInfo, LogEvent, Machine } from "../lib/types";
-import { Badge, cx, IconButton, Kbd } from "./ui";
+import { href } from "../lib/router";
+import { useAppendVirtualizer } from "../lib/virtual";
+import type { ContainerInfo, LogEvent } from "../lib/types";
+import { cx, IconButton, Input, Kbd, Segmented, Select } from "./ui";
 
 const MAX_LINES = 50_000;
+/** Trim in chunks so the buffer isn't spliced on every batch once full. */
+const TRIM_SLACK = 5_000;
 const TAILS = [100, 500, 1000, 5000, 20000];
+/** New lines are applied in batches at most this often. */
+const FLUSH_MS = 50;
+const ROW_H = 20;
+const META_H = 32;
+const CHAR_W = 7.2; // 12px JetBrains Mono
 
 interface Line {
   seq: number;
@@ -30,12 +26,15 @@ interface Line {
   s: "o" | "e" | "m";
   t: number;
   m: string;
-  /** Plain text, for filtering. */
-  plain: string;
+  /** Lower-cased plain text, computed lazily for filtering. */
+  p?: string;
   tone?: "good" | "bad" | "info";
 }
 
+const plainOf = (l: Line) => (l.p ??= stripAnsi(l.m).toLowerCase());
+
 type Conn = "connecting" | "live" | "reconnecting" | "ended";
+type StreamFilter = "all" | "o" | "e";
 
 function useStored<T>(key: string, initial: T): [T, (v: T) => void] {
   const [v, setV] = useState<T>(() => {
@@ -77,7 +76,7 @@ function describeState(state: string, msg?: string): { text: string; tone: Line[
       return { text: "Reconnected to agent", tone: "good" };
     case "disconnected":
     case "unreachable":
-      return { text: `Lost connection to agent${msg ? `: ${msg}` : ""} — retrying`, tone: "bad" };
+      return { text: `Lost connection to agent${msg ? `: ${msg}` : ""}, retrying`, tone: "bad" };
     case "error":
       return { text: `Error${msg ? `: ${msg}` : ""}`, tone: "bad" };
     default:
@@ -86,7 +85,6 @@ function describeState(state: string, msg?: string): { text: string; tone: Line[
 }
 
 function Highlight({ text, q }: { text: string; q: string }) {
-  if (!q) return <>{text}</>;
   const out: React.ReactNode[] = [];
   const lower = text.toLowerCase();
   let i = 0;
@@ -102,8 +100,9 @@ function Highlight({ text, q }: { text: string; q: string }) {
   return <>{out}</>;
 }
 
-const Message = memo(function Message({ m, q }: { m: string; q: string }) {
+function Message({ m, q }: { m: string; q: string }) {
   if (q) return <Highlight text={stripAnsi(m)} q={q} />;
+  if (!m.includes("\x1b")) return <>{m}</>;
   return (
     <>
       {parseAnsi(m).map((seg, i) =>
@@ -113,7 +112,7 @@ const Message = memo(function Message({ m, q }: { m: string; q: string }) {
             style={{
               color: seg.fg,
               backgroundColor: seg.bg,
-              fontWeight: seg.bold ? 700 : undefined,
+              fontWeight: seg.bold ? 600 : undefined,
               opacity: seg.dim ? 0.6 : undefined,
               fontStyle: seg.italic ? "italic" : undefined,
               textDecoration: seg.underline ? "underline" : undefined,
@@ -127,18 +126,74 @@ const Message = memo(function Message({ m, q }: { m: string; q: string }) {
       )}
     </>
   );
+}
+
+interface RowProps {
+  line: Line;
+  q: string;
+  wrap: boolean;
+  showTs: boolean;
+  showDate: boolean;
+  name?: string;
+  nameWidth: number;
+}
+
+/** Memoised so a render only builds rows that are new or changed. */
+const Row = memo(function Row({ line: l, q, wrap, showTs, showDate, name, nameWidth }: RowProps) {
+  if (l.s === "m") {
+    return (
+      <div
+        className={cx(
+          "flex h-8 items-center gap-3 px-4 text-[11px] font-medium",
+          l.tone === "good" ? "text-ok" : l.tone === "bad" ? "text-bad" : "text-fg-faint",
+        )}
+      >
+        <div className="h-px flex-1 bg-line" />
+        <span className="max-w-[80%] truncate">{l.m}</span>
+        <span className="font-mono font-normal tabular-nums text-fg-faint">{logTime(l.t, false).slice(0, 8)}</span>
+        <div className="h-px flex-1 bg-line" />
+      </div>
+    );
+  }
+  return (
+    <div
+      className={cx(
+        "log-row flex gap-3 border-l-2 pl-[14px] pr-4 hover:bg-hover",
+        l.s === "e" ? "border-bad/60 bg-[var(--stderr)]" : "border-transparent",
+      )}
+    >
+      {showTs && <span className="shrink-0 select-none tabular-nums text-fg-faint">{logTime(l.t, showDate)}</span>}
+      {name !== undefined && (
+        <span
+          className="shrink-0 select-none truncate"
+          style={{ color: tagColor(name), width: `${nameWidth}ch` }}
+        >
+          {name}
+        </span>
+      )}
+      <span className={cx("min-w-0", wrap ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre")}>
+        <Message m={l.m} q={q} />
+      </span>
+    </div>
+  );
 });
 
-export function LogViewer({
-  machine,
+export const LogViewer = memo(function LogViewer({
+  machineId,
+  machineName,
+  online,
   containers,
   title,
   project,
+  isProject,
 }: {
-  machine: Machine;
+  machineId: string;
+  machineName: string;
+  online: boolean;
   containers: ContainerInfo[];
   title: string;
   project?: string;
+  isProject: boolean;
 }) {
   const ids = useMemo(() => containers.map((c) => c.id).sort(), [containers]);
   const idsKey = ids.join(",");
@@ -148,22 +203,22 @@ export function LogViewer({
     for (const c of containers) m.set(c.id, c.project && c.service ? c.service : c.name);
     return m;
   }, [containers]);
-  const nameWidth = useMemo(
-    () => Math.min(22, Math.max(6, ...[...names.values()].map((n) => n.length))),
-    [names],
-  );
+  const namesRef = useRef(names);
+  namesRef.current = names;
+  const nameWidth = useMemo(() => Math.min(22, Math.max(6, ...[...names.values()].map((n) => n.length))), [names]);
 
   const [tail, setTail] = useStored("dw:tail", 500);
   const [wrap, setWrap] = useStored("dw:wrap", true);
   const [showTs, setShowTs] = useStored("dw:ts", true);
   const [filter, setFilter] = useState("");
-  const [streamFilter, setStreamFilter] = useState<"all" | "o" | "e">("all");
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [streamFilter, setStreamFilter] = useState<StreamFilter>("all");
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   const [paused, setPaused] = useState(false);
   const [conn, setConn] = useState<Conn>("connecting");
   const [version, setVersion] = useState(0);
   const [follow, setFollow] = useState(true);
   const [pendingCount, setPendingCount] = useState(0);
+  const [width, setWidth] = useState(0);
 
   const linesRef = useRef<Line[]>([]);
   const pendingRef = useRef<Line[]>([]);
@@ -171,13 +226,17 @@ export function LogViewer({
   const seqRef = useRef(0);
   const lastTRef = useRef<number | undefined>(undefined);
   const statesRef = useRef(new Map<string, string>());
-  const frameRef = useRef<number | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastScrollTop = useRef(0);
+  /** Set when lines were reordered or trimmed, so the filtered view is rebuilt. */
+  const dirtyRef = useRef(true);
+  /** Bumped whenever rows are removed or reordered, for the virtualizer. */
+  const epochRef = useRef(0);
 
   const flush = useCallback(() => {
-    frameRef.current = null;
+    timerRef.current = null;
     if (pausedRef.current || pendingRef.current.length === 0) {
       setPendingCount(pendingRef.current.length);
       return;
@@ -191,14 +250,22 @@ export function LogViewer({
       if (l.t < lastBefore) outOfOrder = true;
       lines.push(l);
     }
-    if (outOfOrder) lines.sort((a, b) => a.t - b.t || a.seq - b.seq);
-    if (lines.length > MAX_LINES) lines.splice(0, lines.length - MAX_LINES);
+    if (outOfOrder) {
+      lines.sort((a, b) => a.t - b.t || a.seq - b.seq);
+      dirtyRef.current = true;
+      epochRef.current++;
+    }
+    if (lines.length > MAX_LINES + TRIM_SLACK) {
+      lines.splice(0, lines.length - MAX_LINES);
+      dirtyRef.current = true;
+      epochRef.current++;
+    }
     setPendingCount(0);
     setVersion((v) => v + 1);
   }, []);
 
   const schedule = useCallback(() => {
-    if (frameRef.current === null) frameRef.current = requestAnimationFrame(flush);
+    if (timerRef.current === null) timerRef.current = setTimeout(flush, FLUSH_MS);
   }, [flush]);
 
   useEffect(() => {
@@ -212,23 +279,26 @@ export function LogViewer({
     pendingRef.current = [];
     lastTRef.current = undefined;
     statesRef.current = new Map();
+    dirtyRef.current = true;
     setVersion((v) => v + 1);
     setConn("connecting");
     setFollow(true);
     let es: EventSource | null = null;
     let retry: ReturnType<typeof setTimeout> | undefined;
     let closed = false;
+    const isMulti = idsKey.includes(",");
 
     const meta = (text: string, tone: Line["tone"], c = "") => {
       const t = lastTRef.current ?? Date.now() * 1000;
-      pendingRef.current.push({ seq: seqRef.current++, c, s: "m", t, m: text, plain: text, tone });
+      pendingRef.current.push({ seq: seqRef.current++, c, s: "m", t, m: text, tone });
     };
 
     const ingest = (events: LogEvent[]) => {
+      const pending = pendingRef.current;
       for (const ev of events) {
         if (ev.k === "l") {
-          lastTRef.current = Math.max(lastTRef.current ?? 0, ev.t);
-          pendingRef.current.push({ seq: seqRef.current++, c: ev.c, s: ev.s, t: ev.t, m: ev.m, plain: stripAnsi(ev.m).toLowerCase() });
+          if (lastTRef.current === undefined || ev.t > lastTRef.current) lastTRef.current = ev.t;
+          pending.push({ seq: seqRef.current++, c: ev.c, s: ev.s, t: ev.t, m: ev.m });
         } else {
           const prev = statesRef.current.get(ev.c);
           statesRef.current.set(ev.c, ev.state);
@@ -236,21 +306,24 @@ export function LogViewer({
           if (prev === undefined && ev.c !== "*") continue;
           if (prev === ev.state) continue;
           const d = describeState(ev.state, ev.msg);
-          if (d) meta(multi && ev.c !== "*" ? `${names.get(ev.c) ?? ev.c}: ${d.text}` : d.text, d.tone, ev.c === "*" ? "" : ev.c);
+          if (d) {
+            const who = namesRef.current.get(ev.c) ?? ev.c;
+            meta(isMulti && ev.c !== "*" ? `${who}: ${d.text}` : d.text, d.tone, ev.c === "*" ? "" : ev.c);
+          }
         }
       }
-      if (pendingRef.current.length > MAX_LINES) pendingRef.current.splice(0, pendingRef.current.length - MAX_LINES);
+      if (pending.length > MAX_LINES) pending.splice(0, pending.length - MAX_LINES);
       schedule();
     };
 
     const open = (since?: number) => {
-      es = new EventSource(logsUrl(machine.id, ids, tail, since));
+      es = new EventSource(logsUrl(machineId, idsKey.split(","), tail, since));
       es.onopen = () => setConn("live");
       es.addEventListener("logs", (e) => ingest(JSON.parse((e as MessageEvent).data)));
       es.addEventListener("end", () => {
         es?.close();
         setConn("ended");
-        meta("Stream ended — the container no longer exists", "info");
+        meta("Stream ended: the container no longer exists", "info");
         schedule();
       });
       es.onerror = () => {
@@ -265,49 +338,97 @@ export function LogViewer({
       closed = true;
       es?.close();
       clearTimeout(retry);
-      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
-      frameRef.current = null;
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      timerRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [machine.id, idsKey, tail]);
+  }, [machineId, idsKey, tail, schedule]);
 
+  // Filtered view, maintained incrementally: only lines added since the last
+  // render are tested unless the filter changed or the buffer was reordered.
   const q = filter.trim().toLowerCase();
+  const filtering = q !== "" || streamFilter !== "all" || hidden.size > 0;
+  const viewRef = useRef<{ key: string; done: number; out: Line[] }>({ key: "", done: 0, out: [] });
+  const filterKey = `${q}\0${streamFilter}\0${[...hidden].join(",")}`;
   const visible = useMemo(() => {
     const lines = linesRef.current;
-    if (!q && streamFilter === "all" && hidden.size === 0) return lines.slice();
-    return lines.filter(
-      (l) =>
-        (l.s === "m" || streamFilter === "all" || l.s === streamFilter) &&
-        (!l.c || !hidden.has(l.c)) &&
-        (!q || l.plain.includes(q)),
-    );
+    if (!filtering) {
+      dirtyRef.current = false;
+      viewRef.current = { key: "", done: 0, out: [] };
+      return lines;
+    }
+    const keep = (l: Line) =>
+      (l.s === "m" || streamFilter === "all" || l.s === streamFilter) &&
+      (!l.c || !hidden.has(l.c)) &&
+      (!q || plainOf(l).includes(q));
+    let v = viewRef.current;
+    if (v.key !== filterKey || dirtyRef.current || v.done > lines.length) {
+      v = { key: filterKey, done: 0, out: [] };
+      dirtyRef.current = false;
+    }
+    const out = v.out;
+    for (let i = v.done; i < lines.length; i++) if (keep(lines[i])) out.push(lines[i]);
+    v.done = lines.length;
+    viewRef.current = v;
+    return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version, q, streamFilter, hidden]);
+  }, [version, filterKey, filtering]);
+  const count = visible.length;
+  const lastVisible = useRef(visible);
+  if (lastVisible.current !== visible) {
+    lastVisible.current = visible;
+    epochRef.current++;
+  }
 
-  const virtualizer = useVirtualizer({
-    count: visible.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 20,
-    overscan: 40,
-  });
-
+  // Track the viewport width, for wrapped-row height estimates.
   useLayoutEffect(() => {
-    if (follow && visible.length) virtualizer.scrollToIndex(visible.length - 1, { align: "end" });
-  }, [visible, follow, virtualizer, wrap]);
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => setWidth(Math.round(e.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const showDate = useMemo(() => {
+    const lines = linesRef.current;
+    if (!lines.length) return false;
+    return new Date(lines[0].t / 1000).toDateString() !== new Date().toDateString();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version]);
+
+  const prefixCh = (showTs ? (showDate ? 23 : 12) + 2 : 0) + (multi ? nameWidth + 2 : 0);
+  const cols = Math.max(20, Math.floor((width - 36) / CHAR_W) - prefixCh);
+
+  const layoutKey = wrap ? `wrap:${width}:${showTs}:${showDate}:${nameWidth}:${multi}` : "nowrap";
+  const { start, end, total: totalSize, offsetOf, rowsRef } = useAppendVirtualizer({
+    scrollRef,
+    count,
+    estimate: (i) => {
+      const l = visible[i];
+      if (l.s === "m") return META_H;
+      if (!wrap) return ROW_H;
+      return Math.max(1, Math.ceil(l.m.length / cols)) * ROW_H;
+    },
+    keyOf: (i) => visible[i].seq,
+    measure: wrap,
+    layoutKey,
+    epoch: epochRef.current,
+    follow,
+  });
 
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
-    if (atBottom) setFollow(true);
-    else if (el.scrollTop < lastScrollTop.current - 2) setFollow(false);
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    if (atBottom) {
+      if (!follow) setFollow(true);
+    } else if (el.scrollTop < lastScrollTop.current - 2 && follow) setFollow(false);
     lastScrollTop.current = el.scrollTop;
   };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
-      if (e.key === "/" && tag !== "INPUT" && tag !== "TEXTAREA") {
+      if (e.key === "/" && tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") {
         e.preventDefault();
         filterRef.current?.focus();
       }
@@ -315,15 +436,6 @@ export function LogViewer({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  const showDate = useMemo(() => {
-    const lines = linesRef.current;
-    if (!lines.length) return false;
-    const start = new Date(lines[0].t / 1000);
-    const now = new Date();
-    return start.toDateString() !== now.toDateString();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [version]);
 
   const download = () => {
     const text = visible
@@ -342,257 +454,210 @@ export function LogViewer({
 
   const clear = () => {
     linesRef.current = [];
+    dirtyRef.current = true;
     setVersion((v) => v + 1);
   };
 
+  const toggleHidden = (id: string) =>
+    setHidden((h) => {
+      const n = new Set(h);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+
   const single = !multi ? containers[0] : undefined;
   const total = linesRef.current.length;
+  const rows: React.ReactNode[] = [];
+  for (let i = start; i < end; i++) {
+    const l = visible[i];
+    rows.push(
+      <div
+        key={l.seq}
+        data-i={i}
+        className="absolute left-0 top-0 w-full"
+        style={{ transform: `translateY(${offsetOf(i)}px)`, height: wrap ? undefined : l.s === "m" ? META_H : ROW_H }}
+      >
+        <Row
+          line={l}
+          q={q}
+          wrap={wrap}
+          showTs={showTs}
+          showDate={showDate}
+          name={multi && l.c ? (names.get(l.c) ?? l.c.slice(0, 12)) : undefined}
+          nameWidth={nameWidth}
+        />
+      </div>,
+    );
+  }
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
-      {/* Header */}
-      <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-white/[0.06] px-5 py-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 text-xs text-zinc-500">
-            <Server className="size-3.5" />
-            <span>{machine.name}</span>
-            {project && single && (
-              <>
-                <span className="text-zinc-700">/</span>
-                <a href={`#/m/${encodeURIComponent(machine.id)}/p/${encodeURIComponent(project)}`} className="hover:text-zinc-300">
-                  {project}
-                </a>
-              </>
-            )}
+      <header className="shrink-0 border-b border-line">
+        <div className="flex items-center gap-3 px-4 pb-2 pt-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 text-xs text-fg-faint">
+              <span className="truncate">{machineName}</span>
+              {project && !isProject && (
+                <>
+                  <span>/</span>
+                  <a href={href({ name: "project", machine: machineId, project })} className="truncate hover:text-fg">
+                    {project}
+                  </a>
+                </>
+              )}
+            </div>
+            <div className="mt-0.5 flex min-w-0 items-center gap-2">
+              {single && <span className={cx("size-1.5 shrink-0 rounded-full", stateColor(single.state))} />}
+              <h1 className="truncate text-[15px] font-semibold text-fg">{title}</h1>
+              {single && <span className="hidden truncate font-mono text-xs text-fg-faint md:inline">{single.image}</span>}
+              {multi && <span className="text-xs text-fg-faint">{containers.length} containers</span>}
+            </div>
           </div>
-          <div className="mt-0.5 flex items-center gap-2">
-            {multi ? (
-              <Layers className="size-4 text-violet-300" />
-            ) : (
-              <span className={cx("size-2 rounded-full", stateColor(single?.state ?? ""))} />
-            )}
-            <h1 className="truncate text-[15px] font-semibold text-zinc-100">{title}</h1>
-            {single && (
-              <span className="hidden truncate font-mono text-xs text-zinc-500 md:inline">{single.image}</span>
-            )}
-          </div>
+          <ConnStatus conn={conn} paused={paused} online={online} />
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <ConnBadge conn={conn} paused={paused} online={machine.online} />
-        </div>
-      </header>
 
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] bg-ink-850/50 px-3 py-2">
-        <div className="relative w-full max-w-xs flex-1">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-zinc-500" />
-          <input
+        <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2.5">
+          <Input
             ref={filterRef}
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setFilter("")}
-            placeholder="Filter lines"
-            className="h-8 w-full rounded-lg bg-white/[0.04] pl-8 pr-9 text-[13px] text-zinc-100 ring-1 ring-inset ring-white/[0.08] placeholder:text-zinc-500 focus:outline-none focus:ring-cyan-400/40"
+            placeholder="Filter"
+            icon={<Search className="size-3.5" />}
+            trailing={<Kbd>/</Kbd>}
+            className="w-full min-w-40 max-w-64 flex-1 [&_input]:h-7"
           />
-          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">
-            <Kbd>/</Kbd>
-          </span>
+          <Segmented
+            value={streamFilter}
+            onChange={setStreamFilter}
+            items={[
+              { value: "all", label: "All" },
+              { value: "o", label: "stdout" },
+              { value: "e", label: "stderr" },
+            ]}
+          />
+          <div className="mx-1 h-4 w-px bg-line" />
+          <IconButton label="Timestamps" active={showTs} onClick={() => setShowTs(!showTs)}>
+            <Clock className="size-3.5" />
+          </IconButton>
+          <IconButton label="Wrap lines" active={wrap} onClick={() => setWrap(!wrap)}>
+            <WrapText className="size-3.5" />
+          </IconButton>
+          <IconButton label={paused ? "Resume" : "Pause"} active={paused} onClick={() => setPaused(!paused)}>
+            {paused ? <Play className="size-3.5" /> : <Pause className="size-3.5" />}
+          </IconButton>
+          <IconButton label="Clear" onClick={clear}>
+            <Eraser className="size-3.5" />
+          </IconButton>
+          <IconButton label="Download shown lines" onClick={download} disabled={!count}>
+            <Download className="size-3.5" />
+          </IconButton>
+          <label className="ml-auto flex items-center gap-2 text-xs text-fg-faint">
+            History
+            <Select value={tail} onChange={(e) => setTail(Number(e.target.value))} className="w-auto">
+              {TAILS.map((t) => (
+                <option key={t} value={t}>
+                  {t.toLocaleString()} lines
+                </option>
+              ))}
+            </Select>
+          </label>
         </div>
-        <div className="inline-flex rounded-lg bg-white/[0.04] p-0.5 ring-1 ring-inset ring-white/[0.08]">
-          {(["all", "o", "e"] as const).map((s) => (
-            <button
-              key={s}
-              onClick={() => setStreamFilter(s)}
-              className={cx(
-                "rounded-md px-2.5 py-1 text-xs font-medium transition",
-                streamFilter === s ? "bg-white/[0.1] text-zinc-100" : "text-zinc-400 hover:text-zinc-200",
-              )}
-            >
-              {s === "all" ? "All" : s === "o" ? "stdout" : "stderr"}
-            </button>
-          ))}
-        </div>
-        <div className="mx-1 h-5 w-px bg-white/[0.08]" />
-        <IconButton label="Timestamps" active={showTs} onClick={() => setShowTs(!showTs)}>
-          <Clock className="size-4" />
-        </IconButton>
-        <IconButton label="Wrap lines" active={wrap} onClick={() => setWrap(!wrap)}>
-          <WrapText className="size-4" />
-        </IconButton>
-        <IconButton label={paused ? "Resume" : "Pause"} active={paused} onClick={() => setPaused(!paused)}>
-          {paused ? <Play className="size-4" /> : <Pause className="size-4" />}
-        </IconButton>
-        <IconButton label="Clear" onClick={clear}>
-          <Eraser className="size-4" />
-        </IconButton>
-        <IconButton label="Download visible lines" onClick={download} disabled={!visible.length}>
-          <Download className="size-4" />
-        </IconButton>
-        <label className="ml-auto flex items-center gap-2 text-xs text-zinc-500">
-          History
-          <select
-            value={tail}
-            onChange={(e) => setTail(Number(e.target.value))}
-            className="h-8 rounded-lg bg-white/[0.04] px-2 text-xs text-zinc-200 ring-1 ring-inset ring-white/[0.08] focus:outline-none"
-          >
-            {TAILS.map((t) => (
-              <option key={t} value={t} className="bg-ink-800">
-                {t.toLocaleString()} lines
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
 
-      {multi && (
-        <div className="flex flex-wrap gap-1.5 border-b border-white/[0.06] px-3 py-2">
-          {containers.map((c) => {
-            const off = hidden.has(c.id);
-            const color = tagColor(names.get(c.id) ?? c.id);
-            return (
-              <button
-                key={c.id}
-                onClick={() =>
-                  setHidden((h) => {
-                    const n = new Set(h);
-                    if (n.has(c.id)) n.delete(c.id);
-                    else n.add(c.id);
-                    return n;
-                  })
-                }
-                className={cx(
-                  "inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset transition",
-                  off ? "text-zinc-600 ring-white/[0.06]" : "text-zinc-200 ring-white/[0.12] bg-white/[0.04]",
-                )}
-                title={off ? "Show" : "Hide"}
-              >
-                <span className="size-1.5 rounded-full" style={{ background: off ? "#3f3f46" : color }} />
-                {names.get(c.id)}
-                {c.state !== "running" && <span className="text-zinc-500">· {c.state}</span>}
-              </button>
-            );
-          })}
-        </div>
-      )}
+        {multi && (
+          <div className="flex flex-wrap gap-1 px-3 pb-2.5">
+            {containers.map((c) => {
+              const off = hidden.has(c.id);
+              const name = names.get(c.id) ?? c.id;
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => toggleHidden(c.id)}
+                  aria-pressed={!off}
+                  title={off ? "Show this container" : "Hide this container"}
+                  className={cx(
+                    "inline-flex h-6 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors duration-75",
+                    off ? "border-line text-fg-faint line-through" : "border-line-strong text-fg hover:bg-hover",
+                  )}
+                >
+                  <span className="size-1.5 rounded-full" style={{ background: off ? "var(--line-strong)" : tagColor(name) }} />
+                  {name}
+                  {c.state !== "running" && <span className="text-fg-faint">{c.state}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </header>
 
-      {/* Lines */}
       <div className="relative min-h-0 flex-1">
-        <div ref={scrollRef} onScroll={onScroll} className="absolute inset-0 overflow-auto bg-ink-900 py-2">
-          {visible.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-zinc-600">
-              {conn === "connecting" ? "Connecting…" : q ? "No lines match your filter" : "Waiting for log output…"}
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="absolute inset-0 overflow-auto py-1.5 font-mono text-[12px] leading-5 text-fg"
+          style={{ contain: "strict" }}
+        >
+          {count === 0 ? (
+            <div className="flex h-full items-center justify-center font-sans text-[13px] text-fg-faint">
+              {conn === "connecting" ? "Connecting…" : filtering ? "No lines match" : "Waiting for log output…"}
             </div>
           ) : (
-            <div style={{ height: virtualizer.getTotalSize(), position: "relative", minWidth: wrap ? undefined : "max-content" }}>
-              {virtualizer.getVirtualItems().map((item) => {
-                const l = visible[item.index];
-                return (
-                  <div
-                    key={l.seq}
-                    data-index={item.index}
-                    ref={virtualizer.measureElement}
-                    className="absolute left-0 w-full"
-                    style={{ transform: `translateY(${item.start}px)` }}
-                  >
-                    {l.s === "m" ? (
-                      <MetaRow line={l} />
-                    ) : (
-                      <div
-                        className={cx(
-                          "log-row flex gap-3 border-l-2 px-4 font-mono text-[12.5px] leading-5 hover:bg-white/[0.03]",
-                          l.s === "e" ? "border-red-500/50 bg-red-500/[0.035]" : "border-transparent",
-                        )}
-                      >
-                        {showTs && (
-                          <span className="shrink-0 select-none tabular-nums text-zinc-600">{logTime(l.t, showDate)}</span>
-                        )}
-                        {multi && (
-                          <span
-                            className="shrink-0 truncate select-none"
-                            style={{ color: tagColor(names.get(l.c) ?? l.c), width: `${nameWidth}ch` }}
-                          >
-                            {names.get(l.c) ?? l.c.slice(0, 12)}
-                          </span>
-                        )}
-                        <span
-                          className={cx(
-                            "min-w-0 text-zinc-300",
-                            wrap ? "whitespace-pre-wrap break-words [overflow-wrap:anywhere]" : "whitespace-pre",
-                          )}
-                        >
-                          <Message m={l.m} q={q} />
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+            <div
+              ref={rowsRef}
+              style={{ height: totalSize, position: "relative", minWidth: wrap ? undefined : "max-content" }}
+            >
+              {rows}
             </div>
           )}
         </div>
 
-        {(!follow || (paused && pendingCount > 0)) && visible.length > 0 && (
+        {(!follow || (paused && pendingCount > 0)) && count > 0 && (
           <button
             onClick={() => {
               setPaused(false);
               setFollow(true);
             }}
-            className="absolute bottom-4 left-1/2 inline-flex -translate-x-1/2 animate-pop-in items-center gap-2 rounded-full bg-ink-700/95 px-4 py-2 text-xs font-medium text-zinc-100 shadow-xl ring-1 ring-white/15 backdrop-blur hover:bg-ink-600"
+            className="absolute bottom-4 left-1/2 inline-flex h-8 -translate-x-1/2 animate-rise items-center gap-1.5 rounded-full bg-fg px-3.5 text-xs font-medium text-canvas shadow-md hover:opacity-90"
           >
             <ArrowDown className="size-3.5" />
-            {paused && pendingCount > 0 ? `Resume · ${pendingCount.toLocaleString()} new lines` : "Jump to latest"}
+            {paused && pendingCount > 0 ? `Resume · ${pendingCount.toLocaleString()} new` : "Jump to latest"}
           </button>
         )}
       </div>
 
-      <footer className="flex items-center gap-3 border-t border-white/[0.06] px-4 py-1.5 text-[11px] text-zinc-500">
-        <span className="tabular-nums">{total.toLocaleString()} lines</span>
-        {(q || streamFilter !== "all" || hidden.size > 0) && (
-          <span className="tabular-nums text-cyan-300/80">{visible.length.toLocaleString()} shown</span>
-        )}
-        {total >= MAX_LINES && <span>· keeping the latest {MAX_LINES.toLocaleString()}</span>}
-        <span className="ml-auto">{follow ? "Following" : "Scrolled"}</span>
+      <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-line px-4 text-[11px] tabular-nums text-fg-faint">
+        <span>{total.toLocaleString()} lines</span>
+        {filtering && <span className="text-fg-muted">{count.toLocaleString()} shown</span>}
+        {total >= MAX_LINES && <span>keeping the latest {MAX_LINES.toLocaleString()}</span>}
+        <span className="ml-auto">{follow ? "Following" : "Scrolled up"}</span>
       </footer>
     </div>
   );
-}
+});
 
-function MetaRow({ line }: { line: Line }) {
-  return (
-    <div className="flex items-center gap-3 px-4 py-1.5">
-      <div className="h-px flex-1 bg-white/[0.06]" />
-      <span
-        className={cx(
-          "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium ring-1 ring-inset",
-          line.tone === "good" && "bg-emerald-400/10 text-emerald-300 ring-emerald-400/20",
-          line.tone === "bad" && "bg-red-400/10 text-red-300 ring-red-400/20",
-          line.tone === "info" && "bg-white/[0.05] text-zinc-400 ring-white/10",
-        )}
-      >
-        {line.tone === "bad" && <TriangleAlert className="size-3" />}
-        {line.m}
-        <span className="text-zinc-500">{logTime(line.t, false).slice(0, 8)}</span>
-      </span>
-      <div className="h-px flex-1 bg-white/[0.06]" />
-    </div>
-  );
-}
-
-function ConnBadge({ conn, paused, online }: { conn: Conn; paused: boolean; online: boolean }) {
-  if (paused) return <Badge tone="amber">Paused</Badge>;
-  if (!online && conn !== "live") return <Badge tone="red">Machine offline</Badge>;
-  switch (conn) {
-    case "live":
-      return (
-        <Badge tone="green">
-          <span className="size-1.5 animate-pulse-ring rounded-full bg-emerald-400" /> Live
-        </Badge>
-      );
-    case "connecting":
-      return <Badge tone="neutral">Connecting…</Badge>;
-    case "reconnecting":
-      return <Badge tone="amber">Reconnecting…</Badge>;
-    case "ended":
-      return <Badge tone="neutral">Ended</Badge>;
+function ConnStatus({ conn, paused, online }: { conn: Conn; paused: boolean; online: boolean }) {
+  let dot = "bg-fg-faint";
+  let text = "Connecting";
+  if (paused) {
+    dot = "bg-warn";
+    text = "Paused";
+  } else if (!online && conn !== "live") {
+    dot = "bg-bad";
+    text = "Machine offline";
+  } else if (conn === "live") {
+    dot = "bg-ok";
+    text = "Live";
+  } else if (conn === "reconnecting") {
+    dot = "bg-warn";
+    text = "Reconnecting";
+  } else if (conn === "ended") {
+    text = "Ended";
   }
+  return (
+    <span className="flex shrink-0 items-center gap-1.5 text-xs text-fg-muted">
+      <span className={cx("size-1.5 rounded-full", dot)} />
+      {text}
+    </span>
+  );
 }

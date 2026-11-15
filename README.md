@@ -73,7 +73,7 @@ Either way, Tailscale is what the control server uses to reach the agents. Open 
 
 ### 4. Agents
 
-In the UI go to **Admin → Agents → Add agent**. You get a `compose.yaml` and a `.env` (or a single inlined file) containing a fresh certificate for that machine. Copy them to the server, add your `TS_AUTHKEY`, and run `docker compose up -d`. The machine turns green within a few seconds.
+In the UI go to **Settings → Agents → Add agent**. You get a `compose.yaml` and a `.env` (or a single inlined file) containing a fresh certificate for that machine. Copy them to the server, add your `TS_AUTHKEY`, and run `docker compose up -d`. The machine turns green within a few seconds.
 
 ## Configuration
 

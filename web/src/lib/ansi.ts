@@ -11,12 +11,9 @@ export interface Segment {
   underline?: boolean;
 }
 
-const BASE = [
-  "#4b5563", "#f87171", "#4ade80", "#facc15", "#60a5fa", "#e879f9", "#22d3ee", "#d4d4d8",
-];
-const BRIGHT = [
-  "#9ca3af", "#fca5a5", "#86efac", "#fde047", "#93c5fd", "#f0abfc", "#67e8f9", "#fafafa",
-];
+// Theme-aware: the 16 basic colours resolve to CSS variables in index.css.
+const BASE = Array.from({ length: 8 }, (_, i) => `var(--ansi-${i})`);
+const BRIGHT = Array.from({ length: 8 }, (_, i) => `var(--ansi-${i + 8})`);
 
 function xterm256(n: number): string | undefined {
   if (n < 8) return BASE[n];

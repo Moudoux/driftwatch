@@ -1,21 +1,10 @@
-import {
-  Box,
-  ChevronRight,
-  HardDrive,
-  Layers,
-  LayoutGrid,
-  LogOut,
-  RefreshCw,
-  Search,
-  Server,
-  Settings,
-} from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronRight, LayoutGrid, LogOut, RefreshCw, Search, Settings } from "lucide-react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { health, stateColor } from "../lib/format";
 import { href, type Route } from "../lib/router";
 import type { ContainerInfo, Machine } from "../lib/types";
 import { Logo } from "./Logo";
-import { cx, IconButton, Kbd, StatusDot } from "./ui";
+import { cx, IconButton, Input, Kbd, StatusDot } from "./ui";
 
 export interface Group {
   project: string | null;
@@ -37,7 +26,7 @@ export function groupContainers(containers: ContainerInfo[]): Group[] {
       project,
       containers: cs.sort((a, b) => (a.service ?? a.name).localeCompare(b.service ?? b.name)),
     }));
-  if (loose.length) groups.push({ project: null, containers: loose });
+  if (loose.length) groups.push({ project: null, containers: loose.sort((a, b) => a.name.localeCompare(b.name)) });
   return groups;
 }
 
@@ -48,46 +37,54 @@ function matches(c: ContainerInfo, q: string) {
 function useExpanded(key: string, initial: boolean): [boolean, () => void] {
   const storageKey = `dw:open:${key}`;
   const [open, setOpen] = useState(() => {
-    const v = localStorage.getItem(storageKey);
-    return v === null ? initial : v === "1";
+    try {
+      const v = localStorage.getItem(storageKey);
+      return v === null ? initial : v === "1";
+    } catch {
+      return initial;
+    }
   });
   const toggle = () =>
     setOpen((o) => {
-      localStorage.setItem(storageKey, o ? "0" : "1");
+      try {
+        localStorage.setItem(storageKey, o ? "0" : "1");
+      } catch {
+        /* storage unavailable */
+      }
       return !o;
     });
   return [open, toggle];
 }
 
+const rowBase = "flex h-7 items-center gap-2 rounded-md pr-2 text-[13px] transition-colors duration-75";
+const rowIdle = "text-fg-muted hover:bg-hover hover:text-fg";
+const rowActive = "bg-active text-fg";
+
 function ContainerRow({
   machine,
   c,
-  route,
+  active,
   indent,
 }: {
   machine: string;
   c: ContainerInfo;
-  route: Route;
+  active: boolean;
   indent: boolean;
 }) {
-  const active = route.name === "container" && route.machine === machine && route.container === c.name;
   const h = health(c.status);
+  const stopped = c.state !== "running";
   return (
     <a
       href={href({ name: "container", machine, container: c.name })}
       title={`${c.name}\n${c.image}\n${c.status}`}
-      className={cx(
-        "group flex h-7 items-center gap-2 rounded-md pr-2 text-[13px] transition-colors",
-        indent ? "pl-[42px]" : "pl-[26px]",
-        active ? "bg-cyan-400/10 text-cyan-100" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200",
-      )}
+      className={cx(rowBase, indent ? "pl-[38px]" : "pl-[24px]", active ? rowActive : rowIdle)}
     >
       <span className={cx("size-1.5 shrink-0 rounded-full", stateColor(c.state))} />
-      <span className={cx("truncate", c.state !== "running" && "text-zinc-500")}>
+      <span className={cx("truncate", stopped && !active && "text-fg-faint")}>
         {c.project && c.service ? c.service : c.name}
       </span>
-      {h === "unhealthy" && <span className="ml-auto text-[10px] font-medium text-red-400">unhealthy</span>}
-      {h === "starting" && <span className="ml-auto text-[10px] font-medium text-amber-400">starting</span>}
+      {h === "unhealthy" && <span className="ml-auto text-[11px] text-bad">unhealthy</span>}
+      {h === "starting" && <span className="ml-auto text-[11px] text-warn">starting</span>}
     </a>
   );
 }
@@ -106,36 +103,43 @@ function ProjectGroup({
   const [open, toggle] = useExpanded(`${machine}/${group.project}`, true);
   const active = route.name === "project" && route.machine === machine && route.project === group.project;
   const running = group.containers.filter((c) => c.state === "running").length;
+  const expanded = open || forceOpen;
   return (
     <div>
-      <div
-        className={cx(
-          "group flex h-7 items-center rounded-md pr-1 text-[13px] transition-colors",
-          active ? "bg-violet-400/10 text-violet-100" : "text-zinc-300 hover:bg-white/[0.05]",
-        )}
-      >
-        <button onClick={toggle} className="flex h-full items-center pl-[22px] pr-1 text-zinc-500 hover:text-zinc-300">
-          <ChevronRight className={cx("size-3.5 transition-transform", (open || forceOpen) && "rotate-90")} />
+      <div className={cx(rowBase, "pr-1", active ? rowActive : rowIdle)}>
+        <button
+          onClick={toggle}
+          aria-label={expanded ? "Collapse" : "Expand"}
+          className="flex h-full items-center pl-[18px] pr-0.5 text-fg-faint hover:text-fg"
+        >
+          <ChevronRight className={cx("size-3.5 transition-transform duration-100", expanded && "rotate-90")} />
         </button>
         <a
           href={href({ name: "project", machine, project: group.project })}
-          className="flex min-w-0 flex-1 items-center gap-2"
-          title="View all logs of this compose project"
+          className="flex h-full min-w-0 flex-1 items-center gap-2"
+          title="All logs of this compose project"
         >
-          <Layers className="size-3.5 shrink-0 text-violet-300/80" />
           <span className="truncate font-medium">{group.project}</span>
-          <span className="ml-auto pr-1 text-[11px] tabular-nums text-zinc-500">
+          <span className="ml-auto pr-1 text-[11px] tabular-nums text-fg-faint">
             {running}/{group.containers.length}
           </span>
         </a>
       </div>
-      {(open || forceOpen) &&
-        group.containers.map((c) => <ContainerRow key={c.id} machine={machine} c={c} route={route} indent />)}
+      {expanded &&
+        group.containers.map((c) => (
+          <ContainerRow
+            key={c.id}
+            machine={machine}
+            c={c}
+            indent
+            active={route.name === "container" && route.machine === machine && route.container === c.name}
+          />
+        ))}
     </div>
   );
 }
 
-function MachineNode({ m, route, query }: { m: Machine; route: Route; query: string }) {
+const MachineNode = memo(function MachineNode({ m, route, query }: { m: Machine; route: Route; query: string }) {
   const [open, toggle] = useExpanded(m.id, true);
   const containers = useMemo(
     () => (query ? m.containers.filter((c) => matches(c, query)) : m.containers),
@@ -146,29 +150,25 @@ function MachineNode({ m, route, query }: { m: Machine; route: Route; query: str
   const running = m.containers.filter((c) => c.state === "running").length;
   const expanded = open || !!query;
   return (
-    <div className="mb-1">
+    <div className="mb-2">
       <button
         onClick={toggle}
-        className="group flex h-8 w-full items-center gap-2 rounded-lg px-1.5 text-left text-[13px] text-zinc-200 transition-colors hover:bg-white/[0.05]"
+        className="flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-[13px] text-fg transition-colors duration-75 hover:bg-hover"
       >
         <ChevronRight
-          className={cx("size-3.5 shrink-0 text-zinc-500 transition-transform", expanded && "rotate-90")}
+          className={cx("size-3.5 shrink-0 text-fg-faint transition-transform duration-100", expanded && "rotate-90")}
         />
-        {m.kind === "local" ? (
-          <HardDrive className="size-4 shrink-0 text-zinc-400" />
-        ) : (
-          <Server className="size-4 shrink-0 text-zinc-400" />
-        )}
-        <span className="truncate font-semibold">{m.name}</span>
+        <span className="truncate font-medium">{m.name}</span>
+        {m.kind === "local" && <span className="text-[11px] text-fg-faint">local</span>}
         <span className="ml-auto flex items-center gap-2">
-          {m.online && <span className="text-[11px] tabular-nums text-zinc-500">{running}</span>}
+          {m.online && <span className="text-[11px] tabular-nums text-fg-faint">{running}</span>}
           <StatusDot online={m.online} />
         </span>
       </button>
       {expanded && (
-        <div className="mt-0.5">
+        <div>
           {!m.online && (
-            <div className="ml-[26px] mr-2 mb-1 rounded-md bg-red-500/[0.07] px-2 py-1.5 text-[11px] leading-snug text-red-300/90 ring-1 ring-inset ring-red-500/15">
+            <div className="mb-1 ml-[24px] mr-1 py-1 text-[11px] leading-snug text-bad">
               {m.error ?? "Not reachable yet"}
             </div>
           )}
@@ -182,28 +182,47 @@ function MachineNode({ m, route, query }: { m: Machine; route: Route; query: str
                 forceOpen={!!query}
               />
             ) : (
-              g.containers.map((c) => <ContainerRow key={c.id} machine={m.id} c={c} route={route} indent={false} />)
+              g.containers.map((c) => (
+                <ContainerRow
+                  key={c.id}
+                  machine={m.id}
+                  c={c}
+                  indent={false}
+                  active={route.name === "container" && route.machine === m.id && route.container === c.name}
+                />
+              ))
             ),
           )}
           {m.online && m.containers.length === 0 && (
-            <div className="ml-[26px] py-1 text-xs text-zinc-600">No containers</div>
+            <div className="ml-[24px] py-1 text-xs text-fg-faint">No containers</div>
           )}
         </div>
       )}
     </div>
   );
+});
+
+function NavLink({ to, active, icon, children }: { to: string; active: boolean; icon: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <a href={to} className={cx(rowBase, "h-8 px-2 font-medium", active ? rowActive : rowIdle)}>
+      {icon}
+      {children}
+    </a>
+  );
 }
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   machines,
   route,
-  loading,
+  loaded,
+  refreshing,
   onRefresh,
   onLogout,
 }: {
   machines: Machine[];
   route: Route;
-  loading: boolean;
+  loaded: boolean;
+  refreshing: boolean;
   onRefresh: () => void;
   onLogout: () => void;
 }) {
@@ -220,79 +239,69 @@ export function Sidebar({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   const q = query.trim().toLowerCase();
+  const mac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
   return (
-    <aside className="flex h-full w-72 shrink-0 flex-col border-r border-white/[0.06] bg-ink-850/80">
-      <div className="flex h-14 items-center justify-between px-4">
+    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-line bg-panel">
+      <div className="flex h-12 items-center justify-between pl-4 pr-2">
         <a href="#/">
           <Logo />
         </a>
-        <IconButton label="Refresh" onClick={onRefresh}>
-          <RefreshCw className={cx("size-4", loading && "animate-spin")} />
+        <IconButton label="Refresh now" onClick={onRefresh} disabled={refreshing}>
+          <RefreshCw className={cx("size-3.5", refreshing && "animate-spin")} />
         </IconButton>
       </div>
-      <div className="px-3 pb-3">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-zinc-500" />
-          <input
-            ref={searchRef}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Escape" && setQuery("")}
-            placeholder="Filter containers"
-            className="h-8 w-full rounded-lg bg-white/[0.04] pl-8 pr-12 text-[13px] text-zinc-100 ring-1 ring-inset ring-white/[0.08] placeholder:text-zinc-500 focus:outline-none focus:ring-cyan-400/40"
-          />
-          <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2">
-            <Kbd>Ctrl K</Kbd>
-          </span>
-        </div>
+
+      <div className="px-2 pb-2">
+        <Input
+          ref={searchRef}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === "Escape" && setQuery("")}
+          placeholder="Find container"
+          icon={<Search className="size-3.5" />}
+          trailing={<Kbd>{mac ? "⌘K" : "Ctrl K"}</Kbd>}
+        />
       </div>
 
-      <nav className="px-3">
-        <a
-          href="#/"
-          className={cx(
-            "flex h-8 items-center gap-2.5 rounded-lg px-2 text-[13px] font-medium transition-colors",
-            route.name === "overview" ? "bg-white/[0.07] text-zinc-100" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200",
-          )}
-        >
-          <LayoutGrid className="size-4" /> Overview
-        </a>
+      <nav className="px-2 pb-3">
+        <NavLink to="#/" active={route.name === "overview"} icon={<LayoutGrid className="size-4 text-fg-faint" />}>
+          Overview
+        </NavLink>
       </nav>
 
-      <div className="mt-4 flex items-center justify-between px-5 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+      <div className="flex items-center justify-between px-4 pb-1 text-[11px] font-medium text-fg-faint">
         Machines
-        <span className="tabular-nums">{machines.length}</span>
+        <span className="tabular-nums">{machines.length || ""}</span>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
         {machines.map((m) => (
           <MachineNode key={m.id} m={m} route={route} query={q} />
         ))}
-        {machines.length === 0 && !loading && (
-          <div className="mx-2 mt-2 rounded-xl border border-dashed border-white/10 px-4 py-6 text-center text-xs text-zinc-500">
-            <Box className="mx-auto mb-2 size-5 text-zinc-600" />
+        {machines.length === 0 && loaded && (
+          <div className="px-2 py-3 text-xs leading-relaxed text-fg-faint">
             No machines yet.{" "}
-            <a href="#/admin/agents" className="text-cyan-300 hover:underline">
+            <a href="#/admin/agents" className="text-accent hover:underline">
               Add an agent
             </a>
           </div>
         )}
       </div>
 
-      <div className="flex items-center gap-1 border-t border-white/[0.06] p-2">
-        <a
-          href="#/admin/agents"
-          className={cx(
-            "flex h-9 flex-1 items-center gap-2.5 rounded-lg px-3 text-[13px] font-medium transition-colors",
-            route.name === "admin" ? "bg-white/[0.07] text-zinc-100" : "text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200",
-          )}
-        >
-          <Settings className="size-4" /> Admin
-        </a>
+      <div className="flex items-center gap-1 border-t border-line p-2">
+        <div className="flex-1">
+          <NavLink
+            to="#/admin/agents"
+            active={route.name === "admin"}
+            icon={<Settings className="size-4 text-fg-faint" />}
+          >
+            Settings
+          </NavLink>
+        </div>
         <IconButton label="Sign out" onClick={onLogout}>
-          <LogOut className="size-4" />
+          <LogOut className="size-3.5" />
         </IconButton>
       </div>
     </aside>
   );
-}
+});

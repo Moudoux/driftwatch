@@ -1,7 +1,7 @@
-import { KeyRound, TriangleAlert } from "lucide-react";
+import { TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import type { AgentRow, AgentSnippet } from "../../lib/types";
-import { CodeBlock, Modal, Tabs } from "../ui";
+import { Code, CodeBlock, Modal, Segmented } from "../ui";
 
 export function SnippetDialog({
   open,
@@ -23,52 +23,55 @@ export function SnippetDialog({
       onClose={onClose}
       wide
       title={reissued ? `New certificate for ${agent.name}` : `Deploy the ${agent.name} agent`}
-      description="Copy these onto the machine, then start it with docker compose up -d."
+      description={
+        <>
+          Copy these onto the machine, then start it with <Code>docker compose up -d</Code>.
+        </>
+      }
     >
       <div className="space-y-5">
-        <div className="flex gap-3 rounded-xl bg-amber-400/[0.07] px-4 py-3 text-sm text-amber-200/90 ring-1 ring-inset ring-amber-400/20">
-          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+        <div className="flex gap-2.5 rounded-md border border-warn/30 px-3 py-2.5 text-[13px] leading-relaxed text-fg">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warn" />
           <div>
-            The agent's private key is shown <strong>only now</strong> and is not stored by the control server. If
-            you lose it, reissue the certificate.
+            The agent's private key is shown <strong className="font-semibold">only now</strong> and is not stored by
+            the control server. If you lose it, reissue the certificate.
             {reissued && " The previous certificate stops working immediately."}
           </div>
         </div>
 
-        <ol className="space-y-2 text-sm text-zinc-400">
+        <ol className="space-y-2 text-[13px] leading-relaxed text-fg-muted">
           <li className="flex gap-3">
             <Step n={1} />
             <span>
               Create a Tailscale auth key in the{" "}
               <a
-                className="text-cyan-300 hover:underline"
+                className="text-accent hover:underline"
                 href="https://login.tailscale.com/admin/settings/keys"
                 target="_blank"
                 rel="noreferrer"
               >
                 admin console
               </a>{" "}
-              and put it in <code className="text-zinc-300">TS_AUTHKEY</code>.
+              and put it in <Code>TS_AUTHKEY</Code>.
             </span>
           </li>
           <li className="flex gap-3">
             <Step n={2} />
             <span>
               Save the files below in a new folder on the machine. The node joins your tailnet as{" "}
-              <code className="text-zinc-300">{snippet.tailscaleHostname}</code>.
+              <Code>{snippet.tailscaleHostname}</Code>.
             </span>
           </li>
           <li className="flex gap-3">
             <Step n={3} />
             <span>
-              Run <code className="text-zinc-300">docker compose up -d</code>. The machine turns green here within a few
-              seconds.
+              Run <Code>docker compose up -d</Code>. The machine turns green here within a few seconds.
             </span>
           </li>
         </ol>
 
-        <div className="flex items-center justify-between">
-          <Tabs
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <Segmented
             value={mode}
             onChange={setMode}
             items={[
@@ -76,9 +79,7 @@ export function SnippetDialog({
               { value: "inline", label: "Single compose file" },
             ]}
           />
-          <span className="flex items-center gap-1.5 text-xs text-zinc-500">
-            <KeyRound className="size-3.5" /> mTLS, pinned certificate
-          </span>
+          <span className="text-xs text-fg-faint">mTLS with a pinned certificate</span>
         </div>
 
         {mode === "env" ? (
@@ -96,7 +97,7 @@ export function SnippetDialog({
 
 function Step({ n }: { n: number }) {
   return (
-    <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-[11px] font-semibold text-zinc-300 ring-1 ring-white/10">
+    <span className="flex size-5 shrink-0 items-center justify-center rounded-full border border-line-strong text-[11px] font-medium tabular-nums text-fg-muted">
       {n}
     </span>
   );

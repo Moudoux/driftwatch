@@ -4,13 +4,28 @@ import { api } from "../../lib/api";
 import { formatDate, relativeTime } from "../../lib/format";
 import type { Passkey } from "../../lib/types";
 import { guessDeviceName, registerPasskey } from "../../lib/webauthn";
-import { Badge, Button, Card, CodeBlock, ErrorNote, Field, IconButton, Input, Modal, Spinner } from "../ui";
+import {
+  Badge,
+  Button,
+  Card,
+  Code,
+  CodeBlock,
+  ErrorNote,
+  Field,
+  IconButton,
+  Input,
+  Modal,
+  ModalActions,
+  SectionHeader,
+  Spinner,
+} from "../ui";
 
 export function Passkeys() {
   const [keys, setKeys] = useState<Passkey[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [renaming, setRenaming] = useState<Passkey | null>(null);
+  const [deleting, setDeleting] = useState<Passkey | null>(null);
   const [invite, setInvite] = useState<{ url: string; expiresAt: number } | null>(null);
 
   const load = useCallback(() => {
@@ -22,40 +37,40 @@ export function Passkeys() {
   useEffect(load, [load]);
 
   const remove = async (p: Passkey) => {
-    if (!confirm(`Delete the passkey "${p.name}"? Devices using it will be signed out.`)) return;
     try {
       await api.deletePasskey(p.id);
       load();
     } catch (e) {
       setError((e as Error).message);
     }
+    setDeleting(null);
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-semibold text-zinc-100">Passkeys</h2>
-          <p className="mt-0.5 text-sm text-zinc-500">Every passkey here can sign in. There are no passwords.</p>
-        </div>
-        <div className="flex gap-2">
-          <Button
-            icon={<Link2 className="size-4" />}
-            onClick={async () => {
-              try {
-                setInvite(await api.createInvite());
-              } catch (e) {
-                setError((e as Error).message);
-              }
-            }}
-          >
-            Invite another device
-          </Button>
-          <Button variant="primary" icon={<Fingerprint className="size-4" />} onClick={() => setAdding(true)}>
-            Add passkey here
-          </Button>
-        </div>
-      </div>
+      <SectionHeader
+        title="Passkeys"
+        description="Every passkey here can sign in. There are no passwords."
+        actions={
+          <>
+            <Button
+              icon={<Link2 className="size-3.5" />}
+              onClick={async () => {
+                try {
+                  setInvite(await api.createInvite());
+                } catch (e) {
+                  setError((e as Error).message);
+                }
+              }}
+            >
+              Invite device
+            </Button>
+            <Button variant="primary" icon={<Fingerprint className="size-3.5" />} onClick={() => setAdding(true)}>
+              Add passkey here
+            </Button>
+          </>
+        }
+      />
       <ErrorNote error={error} />
 
       <Card className="overflow-hidden">
@@ -64,31 +79,29 @@ export function Passkeys() {
             <Spinner />
           </div>
         ) : (
-          <ul className="divide-y divide-white/[0.05]">
+          <ul className="divide-y divide-line">
             {keys.map((p) => (
-              <li key={p.id} className="flex items-center gap-4 px-5 py-4">
-                <div className="flex size-9 items-center justify-center rounded-xl bg-white/[0.04] ring-1 ring-white/[0.08]">
-                  <KeyRound className="size-4 text-zinc-300" />
-                </div>
+              <li key={p.id} className="flex items-center gap-3 px-4 py-3">
+                <KeyRound className="size-4 shrink-0 text-fg-faint" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-zinc-100">{p.name}</span>
-                    {p.current && <Badge tone="cyan">this session</Badge>}
+                    <span className="truncate text-[13px] font-medium text-fg">{p.name}</span>
+                    {p.current && <Badge tone="accent">This session</Badge>}
                   </div>
-                  <div className="mt-0.5 text-xs text-zinc-500">
+                  <div className="mt-0.5 text-xs text-fg-faint">
                     Added {formatDate(p.createdAt)} · last used {relativeTime(p.lastUsedAt)}
                   </div>
                 </div>
                 <IconButton label="Rename" onClick={() => setRenaming(p)}>
-                  <Pencil className="size-4" />
+                  <Pencil className="size-3.5" />
                 </IconButton>
                 <IconButton
                   label={keys.length <= 1 ? "You cannot delete your last passkey" : "Delete"}
-                  onClick={() => remove(p)}
+                  onClick={() => setDeleting(p)}
                   disabled={keys.length <= 1}
-                  className="hover:!text-red-300"
+                  className="hover:!text-bad"
                 >
-                  <Trash2 className="size-4" />
+                  <Trash2 className="size-3.5" />
                 </IconButton>
               </li>
             ))}
@@ -96,13 +109,30 @@ export function Passkeys() {
         )}
       </Card>
 
-      <p className="text-xs text-zinc-600">
-        Locked out? Run <code className="text-zinc-400">docker exec -it driftwatch driftwatch invite</code> on the control
-        machine for a one-time registration link.
+      <p className="text-xs leading-relaxed text-fg-faint">
+        Locked out? Run <Code>docker exec -it driftwatch driftwatch invite</Code> on the control machine for a one-time
+        registration link.
       </p>
 
       <AddPasskey open={adding} onClose={() => setAdding(false)} onAdded={load} />
       {renaming && <Rename passkey={renaming} onClose={() => setRenaming(null)} onDone={load} />}
+      {deleting && (
+        <Modal
+          open
+          onClose={() => setDeleting(null)}
+          title={`Delete "${deleting.name}"?`}
+          description="Devices using this passkey are signed out and can't sign in with it again."
+        >
+          <ModalActions>
+            <Button variant="ghost" onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button variant="danger" icon={<Trash2 className="size-3.5" />} onClick={() => remove(deleting)}>
+              Delete passkey
+            </Button>
+          </ModalActions>
+        </Modal>
+      )}
       {invite && (
         <Modal
           open
@@ -145,14 +175,14 @@ function AddPasskey({ open, onClose, onAdded }: { open: boolean; onClose: () => 
           <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={64} autoFocus />
         </Field>
         <ErrorNote error={error} />
-        <div className="flex justify-end gap-2">
+        <ModalActions>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" loading={busy} icon={<Fingerprint className="size-4" />}>
+          <Button type="submit" variant="primary" loading={busy} icon={<Fingerprint className="size-3.5" />}>
             Create passkey
           </Button>
-        </div>
+        </ModalActions>
       </form>
     </Modal>
   );
@@ -160,26 +190,32 @@ function AddPasskey({ open, onClose, onAdded }: { open: boolean; onClose: () => 
 
 function Rename({ passkey, onClose, onDone }: { passkey: Passkey; onClose: () => void; onDone: () => void }) {
   const [name, setName] = useState(passkey.name);
+  const [error, setError] = useState<string | null>(null);
   return (
     <Modal open onClose={onClose} title="Rename passkey">
       <form
         className="space-y-4"
         onSubmit={async (e) => {
           e.preventDefault();
-          await api.renamePasskey(passkey.id, name);
-          onDone();
-          onClose();
+          try {
+            await api.renamePasskey(passkey.id, name);
+            onDone();
+            onClose();
+          } catch (err) {
+            setError((err as Error).message);
+          }
         }}
       >
         <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={64} autoFocus />
-        <div className="flex justify-end gap-2">
+        <ErrorNote error={error} />
+        <ModalActions>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <Button type="submit" variant="primary">
             Save
           </Button>
-        </div>
+        </ModalActions>
       </form>
     </Modal>
   );

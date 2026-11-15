@@ -22,7 +22,7 @@ Run `pnpm build` before `cargo build --release` when the UI changed, or the bina
 - `src/docker.rs`: read-only Docker Engine client over hyper (unix socket or tcp). `follow()` survives container restarts and resumes with `since`.
 - `src/pki.rs`: the control server's CA (rcgen) and rustls configs. Agent certs: SAN `<id>.agent.driftwatch`, EKU serverAuth. Control cert: EKU clientAuth, regenerated on every start.
 - `src/control/`: `mod.rs` startup/state, `api.rs` JSON + SSE routes, `auth.rs` sessions/invites/passkey ceremonies, `webauthn.rs` verification, `machines.rs` agent client + poller + reconnecting streams, `db.rs` SQLite, `snippets.rs` generated compose files, `assets.rs` embedded UI + security headers.
-- `web/src/`: `App.tsx` (auth gate, 5 s machine polling), `components/LogViewer.tsx` (EventSource, virtualized list, filtering), `Sidebar.tsx`, `admin/*`, `lib/*`.
+- `web/src/`: `App.tsx` (auth gate, 5 s machine polling), `components/LogViewer.tsx` (EventSource, batched ingest, incremental filtering), `lib/virtual.ts` (append-optimised virtualizer), `index.css` (light/dark design tokens; use semantic classes like `bg-canvas`, `text-fg-muted`, `border-line`), `Sidebar.tsx`, `admin/*`, `lib/*`.
 
 ## Invariants (don't break these)
 

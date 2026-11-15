@@ -3,7 +3,21 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { formatDate, relativeTime } from "../../lib/format";
 import type { AgentRow, AgentSnippet, MachineStatus } from "../../lib/types";
-import { Badge, Button, Card, EmptyState, ErrorNote, Field, IconButton, Input, Modal, Spinner, StatusDot } from "../ui";
+import {
+  Button,
+  Card,
+  Code,
+  EmptyState,
+  ErrorNote,
+  Field,
+  IconButton,
+  Input,
+  Modal,
+  ModalActions,
+  SectionHeader,
+  Spinner,
+  StatusDot,
+} from "../ui";
 import { SnippetDialog } from "./SnippetDialog";
 
 type Entry = { agent: AgentRow; status: MachineStatus };
@@ -24,8 +38,9 @@ export function Agents({ onChanged }: { onChanged: () => void }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<AgentRow | null>(null);
   const [deleting, setDeleting] = useState<AgentRow | null>(null);
+  const [reissuing, setReissuing] = useState<AgentRow | null>(null);
   const [snippet, setSnippet] = useState<{ agent: AgentRow; snippet: AgentSnippet; reissued?: boolean } | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
     api
@@ -36,39 +51,50 @@ export function Agents({ onChanged }: { onChanged: () => void }) {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000);
+    const t = setInterval(() => !document.hidden && load(), 5000);
     return () => clearInterval(t);
   }, [load]);
 
   const reissue = async (a: AgentRow) => {
-    if (!confirm(`Issue a new certificate for ${a.name}? The current one stops working until you update the agent.`))
-      return;
-    setBusy(a.id);
+    setBusy(true);
     try {
       const res = await api.reissueAgent(a.id);
+      setReissuing(null);
       setSnippet({ ...res, reissued: true });
       load();
     } catch (e) {
       setError((e as Error).message);
+      setReissuing(null);
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
+  };
+
+  const remove = async (a: AgentRow) => {
+    setBusy(true);
+    try {
+      await api.deleteAgent(a.id);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+    setDeleting(null);
+    load();
+    onChanged();
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-semibold text-zinc-100">Agents</h2>
-          <p className="mt-0.5 text-sm text-zinc-500">
-            Each agent runs next to Docker on a machine. The control server connects to it over Tailscale with mutual
-            TLS.
-          </p>
-        </div>
-        <Button variant="primary" icon={<Plus className="size-4" />} onClick={() => setAdding(true)}>
-          Add agent
-        </Button>
-      </div>
+      <SectionHeader
+        title="Agents"
+        description="Each agent runs next to Docker on a machine. The control server connects to it over Tailscale with mutual TLS."
+        actions={
+          <Button variant="primary" icon={<Plus className="size-3.5" />} onClick={() => setAdding(true)}>
+            Add agent
+          </Button>
+        }
+      />
       <ErrorNote error={error} />
 
       <Card className="overflow-hidden">
@@ -81,40 +107,42 @@ export function Agents({ onChanged }: { onChanged: () => void }) {
             Add one for every machine you want to see logs from.
           </EmptyState>
         ) : (
-          <ul className="divide-y divide-white/[0.05]">
+          <ul className="divide-y divide-line">
             {entries.map(({ agent: a, status: s }) => (
-              <li key={a.id} className="flex items-center gap-4 px-5 py-4">
-                <StatusDot online={s.online} pulse />
+              <li key={a.id} className="flex items-center gap-3 px-4 py-3">
+                <StatusDot online={s.online} />
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-zinc-100">{a.name}</span>
-                    <span className="font-mono text-xs text-zinc-500">{a.id}</span>
-                    {s.info && <Badge>v{s.info.version}</Badge>}
+                  <div className="flex flex-wrap items-baseline gap-x-2">
+                    <span className="text-[13px] font-medium text-fg">{a.name}</span>
+                    <span className="font-mono text-xs text-fg-faint">{a.id}</span>
+                    {s.info && <span className="text-xs text-fg-faint">v{s.info.version}</span>}
                   </div>
-                  <div className="mt-0.5 truncate text-xs text-zinc-500">
+                  <div className="mt-0.5 truncate text-xs text-fg-muted">
                     <span className="font-mono">
                       {a.address}:{a.port}
                     </span>
                     {" · "}
-                    {s.online
-                      ? `${s.containers.length} containers · ${s.latencyMs ?? "?"} ms`
-                      : s.error
-                        ? s.error
-                        : `last seen ${relativeTime(s.lastSeen)}`}
+                    {s.online ? (
+                      `${s.containers.length} containers · ${s.latencyMs ?? "?"} ms`
+                    ) : s.error ? (
+                      <span className="text-bad">{s.error}</span>
+                    ) : (
+                      `last seen ${relativeTime(s.lastSeen)}`
+                    )}
                   </div>
-                  <div className="mt-0.5 text-[11px] text-zinc-600">
+                  <div className="mt-0.5 truncate text-[11px] text-fg-faint">
                     Certificate issued {formatDate(a.certIssuedAt)} · sha256 {a.fingerprint.slice(0, 16)}…
                   </div>
                 </div>
-                <div className="flex items-center gap-1">
+                <div className="flex shrink-0 items-center">
                   <IconButton label="Edit" onClick={() => setEditing(a)}>
-                    <Pencil className="size-4" />
+                    <Pencil className="size-3.5" />
                   </IconButton>
-                  <IconButton label="Reissue certificate" onClick={() => reissue(a)} disabled={busy === a.id}>
-                    <RotateCcw className="size-4" />
+                  <IconButton label="Reissue certificate" onClick={() => setReissuing(a)}>
+                    <RotateCcw className="size-3.5" />
                   </IconButton>
-                  <IconButton label="Remove" onClick={() => setDeleting(a)} className="hover:!text-red-300">
-                    <Trash2 className="size-4" />
+                  <IconButton label="Remove" onClick={() => setDeleting(a)} className="hover:!text-bad">
+                    <Trash2 className="size-3.5" />
                   </IconButton>
                 </div>
               </li>
@@ -154,33 +182,48 @@ export function Agents({ onChanged }: { onChanged: () => void }) {
           reissued={snippet.reissued}
         />
       )}
+      {reissuing && (
+        <Modal
+          open
+          onClose={() => setReissuing(null)}
+          title={`Reissue the certificate for ${reissuing.name}?`}
+          description="The current certificate stops working immediately, until you update the agent with the new one."
+        >
+          <ModalActions>
+            <Button variant="ghost" onClick={() => setReissuing(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              loading={busy}
+              icon={<RotateCcw className="size-3.5" />}
+              onClick={() => reissue(reissuing)}
+            >
+              Reissue
+            </Button>
+          </ModalActions>
+        </Modal>
+      )}
       {deleting && (
-        <Modal open onClose={() => setDeleting(null)} title={`Remove ${deleting.name}?`}>
-          <p className="text-sm text-zinc-400">
-            The control server stops connecting to this agent and forgets its certificate. Remember to remove the
-            containers from the machine too.
-          </p>
-          <div className="mt-5 flex justify-end gap-2">
+        <Modal
+          open
+          onClose={() => setDeleting(null)}
+          title={`Remove ${deleting.name}?`}
+          description="The control server stops connecting to this agent and forgets its certificate. Remember to remove the containers from the machine too."
+        >
+          <ModalActions>
             <Button variant="ghost" onClick={() => setDeleting(null)}>
               Cancel
             </Button>
             <Button
               variant="danger"
-              icon={<Trash2 className="size-4" />}
-              onClick={async () => {
-                try {
-                  await api.deleteAgent(deleting.id);
-                } catch (e) {
-                  setError((e as Error).message);
-                }
-                setDeleting(null);
-                load();
-                onChanged();
-              }}
+              loading={busy}
+              icon={<Trash2 className="size-3.5" />}
+              onClick={() => remove(deleting)}
             >
               Remove agent
             </Button>
-          </div>
+          </ModalActions>
         </Modal>
       )}
     </div>
@@ -243,7 +286,14 @@ function AgentForm({
     >
       <form onSubmit={submit} className="space-y-4">
         <Field label="Name">
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. NAS" autoFocus required maxLength={64} />
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. NAS"
+            autoFocus
+            required
+            maxLength={64}
+          />
         </Field>
         <Field
           label="Tailscale host name or IP"
@@ -253,7 +303,7 @@ function AgentForm({
               {!agent && (
                 <>
                   {" "}
-                  Defaults to <code className="text-zinc-400">{defaultAddress}</code>.
+                  Defaults to <Code>{defaultAddress}</Code>.
                 </>
               )}
             </>
@@ -265,14 +315,14 @@ function AgentForm({
           <Input value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))} inputMode="numeric" />
         </Field>
         <ErrorNote error={error} />
-        <div className="flex justify-end gap-2 pt-1">
+        <ModalActions>
           <Button type="button" variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <Button type="submit" variant="primary" loading={busy} disabled={!name.trim()}>
             {agent ? "Save" : "Create agent"}
           </Button>
-        </div>
+        </ModalActions>
       </form>
     </Modal>
   );

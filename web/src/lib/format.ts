@@ -40,30 +40,25 @@ export function isoTime(micros: number): string {
 }
 
 /** Stable colour per container name, used to tag lines in merged views. */
-const TAG_COLORS = [
-  "#22d3ee", "#a78bfa", "#f472b6", "#34d399", "#fbbf24", "#60a5fa", "#fb923c", "#4ade80",
-  "#e879f9", "#2dd4bf",
-];
+const TAG_COUNT = 10;
 export function tagColor(key: string): string {
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
-  return TAG_COLORS[Math.abs(h) % TAG_COLORS.length];
+  return `var(--tag-${Math.abs(h) % TAG_COUNT})`;
 }
 
 export function stateColor(state: string): string {
   switch (state) {
     case "running":
-      return "bg-emerald-400";
+      return "bg-ok";
     case "restarting":
-      return "bg-amber-400";
+      return "bg-warn";
     case "paused":
-      return "bg-sky-400";
+      return "bg-accent";
     case "dead":
-      return "bg-red-500";
-    case "created":
-      return "bg-zinc-500";
+      return "bg-bad";
     default:
-      return "bg-zinc-600";
+      return "bg-fg-faint";
   }
 }
 
