@@ -160,6 +160,11 @@ pub struct ControlConfig {
     #[arg(long = "dns", env = "DRIFTWATCH_DNS", global = true)]
     pub dns: Option<std::net::IpAddr>,
 
+    /// Tailnet DNS suffix (e.g. tail1234.ts.net) appended to short agent
+    /// names. Derived from DRIFTWATCH_PUBLIC_URL when that is a ts.net name.
+    #[arg(long = "tailnet", env = "DRIFTWATCH_TAILNET", global = true)]
+    pub tailnet: Option<String>,
+
     /// Image reference used in generated compose snippets.
     #[arg(
         long = "image",

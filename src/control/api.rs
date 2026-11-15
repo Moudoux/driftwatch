@@ -10,7 +10,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use futures_util::{Stream, StreamExt};
+use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -110,10 +110,7 @@ struct LogsQuery {
     since: Option<i64>,
 }
 
-async fn logs(
-    State(app): State<App>,
-    Query(q): Query<LogsQuery>,
-) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+async fn logs(State(app): State<App>, Query(q): Query<LogsQuery>) -> ApiResult<impl IntoResponse> {
     let machine = app
         .registry
         .get(&q.machine)
@@ -135,16 +132,23 @@ async fn logs(
     let batches = tokio_stream::StreamExt::chunks_timeout(events, 500, Duration::from_millis(50));
     let stream = batches
         .map(|batch| {
-            Ok(Event::default()
-                .event("logs")
-                .json_data(batch)
-                .unwrap_or_default())
+            Ok::<_, Infallible>(
+                Event::default()
+                    .event("logs")
+                    .json_data(batch)
+                    .unwrap_or_default(),
+            )
         })
         // Tell the browser not to reconnect (EventSource would replay the tail).
         .chain(futures_util::stream::once(async {
             Ok(Event::default().event("end").data("end"))
         }));
-    Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+    let sse = Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)));
+    // Stop nginx (and similar reverse proxies) from buffering the live stream.
+    Ok((
+        [("x-accel-buffering", "no"), ("cache-control", "no-cache")],
+        sse,
+    ))
 }
 
 // ---- agents ----
@@ -354,7 +358,7 @@ async fn system(State(app): State<App>) -> ApiResult<impl IntoResponse> {
         "caFingerprint": app.ca.fingerprint()?,
         "localCollection": app.local.is_some(),
         "image": app.cfg.image,
-        "controlSnippet": snippets::control(&app.cfg.image, &app.rp.id),
+        "controlSnippet": snippets::control(&app.cfg.image, &app.rp.id, &app.rp.origin),
     })))
 }
 

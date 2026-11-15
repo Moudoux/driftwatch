@@ -10,7 +10,7 @@ Live Docker logs from every machine you own, in one web UI, without exposing a s
 - **linux/amd64 and linux/arm64** images are built by GitHub Actions.
 
 ```
- Browser ──HTTPS (Tailscale Serve)──▶ control ──mTLS over Tailscale──▶ agent ──▶ /var/run/docker.sock
+ Browser ──HTTPS (nginx on LAN, or Tailscale Serve)──▶ control ──mTLS over Tailscale──▶ agent ──▶ /var/run/docker.sock
    passkey session                      │  SQLite: CA, agents,             (no state, env only)
                                         │  passkeys, sessions
                                         └──▶ local /var/run/docker.sock  (optional)
@@ -22,7 +22,7 @@ The control server opens connections to the agents; agents never connect out. An
 
 | Concern | How it is handled |
 | --- | --- |
-| Network exposure | Agents listen only inside a Tailscale sidecar's network namespace. The UI is published on the tailnet with Tailscale Serve (HTTPS). Nothing is published on the host. |
+| Network exposure | Agents listen only inside a Tailscale sidecar's network namespace and publish nothing on the host. The UI is served either by your own HTTPS reverse proxy (published only on `127.0.0.1:8080` for it) or on the tailnet with Tailscale Serve. |
 | Agent ⇄ control trust | TLS 1.3 mutual auth. The control server is a CA. Agent certificates carry `serverAuth` and the SAN `<id>.agent.driftwatch`; the control certificate carries `clientAuth` and `control.driftwatch`. |
 | Stolen agent credentials | An agent certificate cannot connect to other agents (wrong key usage and SAN). The control server also **pins each agent's certificate fingerprint**, so *Reissue certificate* revokes the old one immediately. |
 | Web UI auth | WebAuthn passkeys (discoverable credentials, user verification required). Sessions are `HttpOnly`, `SameSite=Strict`, `__Host-` cookies. State-changing requests must come from the UI's own origin. |
@@ -36,7 +36,7 @@ The control server opens connections to the agents; agents never connect out. An
 
 In the [Tailscale admin console](https://login.tailscale.com/admin):
 
-1. Enable **MagicDNS** and **HTTPS certificates** (DNS page).
+1. Enable **MagicDNS** (DNS page). Also enable **HTTPS certificates** if you want to serve the UI with Tailscale Serve instead of your own proxy.
 2. Create an **auth key** (Settings → Keys). A reusable, tagged key is convenient for several machines.
 
 ### 2. Pull access to the image
@@ -49,16 +49,27 @@ docker login ghcr.io -u Moudoux
 
 ### 3. Control server (e.g. the Raspberry Pi)
 
+**Behind nginx on your LAN** (default, [deploy/control/compose.yaml](deploy/control/compose.yaml)):
+
 ```sh
 mkdir driftwatch && cd driftwatch
-curl -O https://raw.githubusercontent.com/Moudoux/driftwatch/main/deploy/control/compose.yaml   # or copy it from this repo
+# copy deploy/control/compose.yaml from this repo
 echo "TS_AUTHKEY=tskey-auth-..." > .env
-# edit DRIFTWATCH_PUBLIC_URL in compose.yaml: https://driftwatch.<your-tailnet>.ts.net
+# set DRIFTWATCH_PUBLIC_URL in compose.yaml to the HTTPS URL nginx serves, e.g. https://logs.home.lan
 docker compose up -d
 docker exec -it driftwatch driftwatch invite
 ```
 
-Open the printed link and create your first passkey. Because `DRIFTWATCH_LOCAL=true`, the Pi's own containers appear right away, with no second container needed.
+Then add an nginx site like [deploy/control/nginx.conf](deploy/control/nginx.conf). Things to know:
+
+- **HTTPS is required.** Browsers only allow passkeys on HTTPS (or `localhost`), so `http://192.168.1.10` will not work. A certificate from a local CA, or from Let's Encrypt via a DNS challenge, is fine.
+- **Passkeys are bound to the host name** in `DRIFTWATCH_PUBLIC_URL`, so always open the UI through that name.
+- **Live streams are server-sent events.** Driftwatch sends `X-Accel-Buffering: no`, and the example config also turns off buffering and raises `proxy_read_timeout`.
+- The UI port is published on `127.0.0.1:8080` of the Pi for nginx. If nginx runs in Docker, join the Tailscale container to nginx's network instead (see the comments in the compose file).
+
+**Over Tailscale only**: use [deploy/control/compose.tailscale-serve.yaml](deploy/control/compose.tailscale-serve.yaml) with `DRIFTWATCH_PUBLIC_URL=https://driftwatch.<your-tailnet>.ts.net`. Tailscale Serve provides the HTTPS certificate.
+
+Either way, Tailscale is what the control server uses to reach the agents. Open the link printed by `invite` and create your first passkey. Because `DRIFTWATCH_LOCAL=true`, the Pi's own containers appear right away, with no second container needed.
 
 ### 4. Agents
 
@@ -81,11 +92,12 @@ All settings are environment variables (each also has a `--flag`; see `driftwatc
 | `DRIFTWATCH_LOCAL_NAME` | control | Docker host name | Display name of the local machine |
 | `DRIFTWATCH_LOCAL_DOCKER` | control | `/var/run/docker.sock` | Docker endpoint for local collection |
 | `DRIFTWATCH_DNS` | control | – | DNS server for agent names, e.g. `100.100.100.100` for MagicDNS |
+| `DRIFTWATCH_TAILNET` | control | from public URL | Tailnet suffix for short agent names, e.g. `tail1234.ts.net` |
 | `DRIFTWATCH_IMAGE` | control | `ghcr.io/moudoux/driftwatch:latest` | Image used in generated snippets |
 | `DRIFTWATCH_POLL_INTERVAL` | control | `10` | Seconds between agent status polls |
 | `DRIFTWATCH_LOG` | both | `info` | Log filter, e.g. `debug` |
 
-Short agent addresses such as `driftwatch-nas` are expanded with your tailnet domain, which is taken from `DRIFTWATCH_PUBLIC_URL` when that is a `*.ts.net` name.
+Short agent addresses such as `driftwatch-nas` are expanded with your tailnet domain, which is taken from `DRIFTWATCH_PUBLIC_URL` when that is a `*.ts.net` name. Behind nginx, set `DRIFTWATCH_TAILNET` (e.g. `tail1234.ts.net`) for that, or enter the agent's full `*.ts.net` name or its `100.x.y.z` address.
 
 ## Using the log viewer
 

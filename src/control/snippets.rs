@@ -121,15 +121,74 @@ pub fn agent(image: &str, row: &AgentRow, issued: &Issued, ca_pem: &str) -> Agen
     }
 }
 
-pub fn control(image: &str, rp_id: &str) -> String {
-    let host = rp_id.split('.').next().unwrap_or("driftwatch");
-    let public = if rp_id == "localhost" {
-        "https://driftwatch.YOUR-TAILNET.ts.net".to_string()
+/// Compose file for the control server. A `*.ts.net` public URL gets the
+/// Tailscale Serve variant; anything else (e.g. nginx on the LAN) gets the
+/// reverse-proxy variant.
+pub fn control(image: &str, rp_id: &str, origin: &str) -> String {
+    if rp_id.ends_with(".ts.net") {
+        control_tailscale_serve(image, rp_id, origin)
+    } else if rp_id == "localhost" {
+        control_reverse_proxy(image, "https://logs.example.lan")
     } else {
-        format!("https://{rp_id}")
-    };
+        control_reverse_proxy(image, origin)
+    }
+}
+
+fn control_reverse_proxy(image: &str, public: &str) -> String {
     format!(
-        r#"# Driftwatch control server (also collects this machine's logs)
+        r#"# Driftwatch control server behind your own reverse proxy (e.g. nginx).
+# Tailscale is only used to reach the agents on other machines.
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: driftwatch
+    environment:
+      TS_AUTHKEY: ${{TS_AUTHKEY}}
+      TS_HOSTNAME: driftwatch
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "false"
+    # driftwatch shares this container's network, so its port is published
+    # here. nginx on the host proxies to http://127.0.0.1:8080.
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+
+  driftwatch:
+    image: {image}
+    network_mode: service:tailscale
+    depends_on:
+      - tailscale
+    environment:
+      DRIFTWATCH_MODE: control
+      # The HTTPS URL nginx serves. Passkeys are bound to this host name.
+      DRIFTWATCH_PUBLIC_URL: {public}
+      DRIFTWATCH_HTTP_LISTEN: 0.0.0.0:8080
+      DRIFTWATCH_LOCAL: "true"
+      # Resolve agent names with MagicDNS; short names get this suffix.
+      DRIFTWATCH_DNS: 100.100.100.100
+      DRIFTWATCH_TAILNET: YOUR-TAILNET.ts.net
+    volumes:
+      - driftwatch-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+volumes:
+  tailscale-state:
+  driftwatch-data:
+"#
+    )
+}
+
+fn control_tailscale_serve(image: &str, rp_id: &str, public: &str) -> String {
+    let host = rp_id.split('.').next().unwrap_or("driftwatch");
+    format!(
+        r#"# Driftwatch control server, served on your tailnet with Tailscale Serve.
 services:
   tailscale:
     image: tailscale/tailscale:latest

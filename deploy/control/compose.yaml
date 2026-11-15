@@ -1,16 +1,17 @@
-# Driftwatch control server.
-#
-# Runs on one machine (e.g. a Raspberry Pi). It serves the web UI over HTTPS on
-# your tailnet via Tailscale Serve, connects out to every agent, and also
-# collects this machine's own container logs (DRIFTWATCH_LOCAL).
+# Driftwatch control server behind your own reverse proxy (e.g. nginx on a
+# Raspberry Pi), reachable on your LAN. Tailscale is only used by the control
+# server to reach agents on other machines.
 #
 # Before starting:
-#   1. In the Tailscale admin console enable MagicDNS and HTTPS certificates.
-#   2. Create an auth key and put it in .env as TS_AUTHKEY=tskey-auth-...
-#   3. Set DRIFTWATCH_PUBLIC_URL below to https://driftwatch.<your-tailnet>.ts.net
+#   1. Create a Tailscale auth key and put it in .env as TS_AUTHKEY=tskey-auth-...
+#   2. Set DRIFTWATCH_PUBLIC_URL below to the HTTPS URL nginx serves.
+#      Passkeys need HTTPS and are bound to that host name.
+#   3. Add the nginx site from nginx.conf in this folder.
 #
 # Then: docker compose up -d
 #       docker exec -it driftwatch driftwatch invite   # one-time passkey link
+#
+# Prefer to reach the UI over Tailscale only? See compose.tailscale-serve.yaml.
 
 services:
   tailscale:
@@ -22,10 +23,18 @@ services:
       TS_HOSTNAME: driftwatch
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "false"
-      TS_SERVE_CONFIG: /config/serve.json
-    configs:
-      - source: tailscale-serve
-        target: /config/serve.json
+    # driftwatch shares this container's network, so its port is published
+    # here. nginx on the host proxies to http://127.0.0.1:8080.
+    #
+    # If nginx itself runs in a container, drop `ports` and instead join this
+    # service to nginx's network, then proxy to http://driftwatch-tailscale:8080:
+    #   networks: [proxy]
+    # and at the bottom of the file:
+    #   networks:
+    #     proxy:
+    #       external: true
+    ports:
+      - "127.0.0.1:8080:8080"
     volumes:
       - tailscale-state:/var/lib/tailscale
     devices:
@@ -42,24 +51,18 @@ services:
       - tailscale
     environment:
       DRIFTWATCH_MODE: control
-      DRIFTWATCH_PUBLIC_URL: https://driftwatch.YOUR-TAILNET.ts.net
-      # Only reachable through Tailscale Serve inside the shared network namespace.
-      DRIFTWATCH_HTTP_LISTEN: 127.0.0.1:8080
+      DRIFTWATCH_PUBLIC_URL: https://logs.example.lan
+      DRIFTWATCH_HTTP_LISTEN: 0.0.0.0:8080
       # Also show this machine's containers.
       DRIFTWATCH_LOCAL: "true"
-      # Resolve agent names with MagicDNS.
+      # Resolve agent names with MagicDNS; short names like driftwatch-nas get
+      # this suffix (find it on the DNS page of the Tailscale admin console).
       DRIFTWATCH_DNS: 100.100.100.100
+      DRIFTWATCH_TAILNET: YOUR-TAILNET.ts.net
     volumes:
       - driftwatch-data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
-
-configs:
-  tailscale-serve:
-    # `$$` is compose's escape for a literal `$`; Tailscale fills in TS_CERT_DOMAIN.
-    content: |
-      {"TCP": {"443": {"HTTPS": true}},
-       "Web": {"$${TS_CERT_DOMAIN}:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8080"}}}}}
 
 volumes:
   tailscale-state:

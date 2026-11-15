@@ -121,11 +121,18 @@ pub async fn run(cfg: ControlConfig) -> Result<()> {
         db.meta_set("user_handle", &webauthn::b64(&h))?;
     }
 
-    let search_domain = public
-        .host
-        .strip_suffix(".ts.net")
-        .and_then(|rest| rest.split_once('.'))
-        .map(|(_, tailnet)| format!("{tailnet}.ts.net"));
+    let search_domain = cfg
+        .tailnet
+        .clone()
+        .map(|t| t.trim_matches('.').to_string())
+        .filter(|t| !t.is_empty())
+        .or_else(|| {
+            public
+                .host
+                .strip_suffix(".ts.net")
+                .and_then(|rest| rest.split_once('.'))
+                .map(|(_, tailnet)| format!("{tailnet}.ts.net"))
+        });
 
     let state = Arc::new(AppState {
         rp: webauthn::RelyingParty {
