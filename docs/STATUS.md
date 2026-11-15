@@ -15,9 +15,11 @@ _Last updated: 2026-11-15_
   - Generated agent/control compose snippets pass `docker compose config`.
 - nginx / LAN deployment: default `deploy/control/compose.yaml` publishes 127.0.0.1:8080 for a reverse proxy; `deploy/control/nginx.conf` example; SSE sends `X-Accel-Buffering: no`; `DRIFTWATCH_TAILNET` expands short agent names.
 
+- GitHub Actions: CI and the multi-arch (amd64 + arm64) image build pass; the image is on GHCR. (The parallel arch builds once raced on the shared cargo cache; the cache mount is now `sharing=locked`.)
+
 ## Not verified yet
 
-- **Dockerfile / multi-arch image**: no buildx locally, so it is first exercised by the `Build & publish` workflow on GitHub.
+- **Running the image on a real arm64 machine** (the Pi).
 - **Real Tailscale deployment**: sidecar networking, MagicDNS resolution via `DRIFTWATCH_DNS=100.100.100.100`, and Tailscale Serve have not been run on real machines.
 - **Real browser passkeys** (Touch ID / Windows Hello / phone): only the software authenticator was tested.
 - **nginx in front of the UI**: the config example has not been run.
