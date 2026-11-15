@@ -39,7 +39,9 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
 COPY --from=web /web/dist ./web/dist
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+# The registry cache is shared by the parallel amd64/arm64 builds; lock it so
+# they don't unpack the same crate at the same time.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,id=driftwatch-target-$TARGETARCH \
     cargo build --release --locked --target "$(cat /triple)" \
     && cp "target/$(cat /triple)/release/driftwatch" /driftwatch
