@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Live Docker log streaming across machines over Tailscale and mutual TLS"
 rust-version = "1.88"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"

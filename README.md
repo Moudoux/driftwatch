@@ -144,3 +144,7 @@ deploy/            example compose files
 
 - **CI** (`.github/workflows/ci.yml`): UI typecheck and build, `cargo fmt`, `clippy -D warnings` and tests.
 - **Build & publish** (`.github/workflows/release.yml`): multi-arch image to GHCR on every push to `main` (`latest`, `sha-…`) and on `v*` tags (semver tags). Tags also create a GitHub release with `driftwatch-linux-amd64` / `-arm64` binaries. The Rust code is cross-compiled on the runner, so the arm64 build needs no emulation.
+
+## License
+
+[MIT](LICENSE)
