@@ -19,7 +19,7 @@ _Last updated: 2026-11-15_
 
 ## Not verified yet
 
-- **Running the image on a real arm64 machine** (the Pi).
+- **Running the image on a real arm64 machine** (e.g. a Raspberry Pi).
 - **Real Tailscale deployment**: sidecar networking, MagicDNS resolution via `DRIFTWATCH_DNS=100.100.100.100`, and Tailscale Serve have not been run on real machines.
 - **Real browser passkeys** (Touch ID / Windows Hello / phone): only the software authenticator was tested.
 - **nginx in front of the UI**: the config example has not been run.

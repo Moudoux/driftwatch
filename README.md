@@ -39,15 +39,7 @@ In the [Tailscale admin console](https://login.tailscale.com/admin):
 1. Enable **MagicDNS** (DNS page). Also enable **HTTPS certificates** if you want to serve the UI with Tailscale Serve instead of your own proxy.
 2. Create an **auth key** (Settings → Keys). A reusable, tagged key is convenient for several machines.
 
-### 2. Pull access to the image
-
-The image is published to GitHub Container Registry as `ghcr.io/moudoux/driftwatch`. While the repository is private, log in once on each server with a personal access token that has the `read:packages` scope:
-
-```sh
-docker login ghcr.io -u Moudoux
-```
-
-### 3. Control server (e.g. the Raspberry Pi)
+### 2. Control server (e.g. a Raspberry Pi)
 
 **Behind nginx on your LAN** (default, [deploy/control/compose.yaml](deploy/control/compose.yaml)):
 
@@ -55,7 +47,7 @@ docker login ghcr.io -u Moudoux
 mkdir driftwatch && cd driftwatch
 # copy deploy/control/compose.yaml from this repo
 echo "TS_AUTHKEY=tskey-auth-..." > .env
-# set DRIFTWATCH_PUBLIC_URL in compose.yaml to the HTTPS URL nginx serves, e.g. https://logs.home.lan
+# set DRIFTWATCH_PUBLIC_URL in compose.yaml to the HTTPS URL nginx serves, e.g. https://logs.example.lan
 docker compose up -d
 docker exec -it driftwatch driftwatch invite
 ```
@@ -65,13 +57,13 @@ Then add an nginx site like [deploy/control/nginx.conf](deploy/control/nginx.con
 - **HTTPS is required.** Browsers only allow passkeys on HTTPS (or `localhost`), so `http://192.168.1.10` will not work. A certificate from a local CA, or from Let's Encrypt via a DNS challenge, is fine.
 - **Passkeys are bound to the host name** in `DRIFTWATCH_PUBLIC_URL`, so always open the UI through that name.
 - **Live streams are server-sent events.** Driftwatch sends `X-Accel-Buffering: no`, and the example config also turns off buffering and raises `proxy_read_timeout`.
-- The UI port is published on `127.0.0.1:8080` of the Pi for nginx. If nginx runs in Docker, join the Tailscale container to nginx's network instead (see the comments in the compose file).
+- The UI port is published on `127.0.0.1:8080` of the host for nginx. If nginx runs in Docker, join the Tailscale container to nginx's network instead (see the comments in the compose file).
 
 **Over Tailscale only**: use [deploy/control/compose.tailscale-serve.yaml](deploy/control/compose.tailscale-serve.yaml) with `DRIFTWATCH_PUBLIC_URL=https://driftwatch.<your-tailnet>.ts.net`. Tailscale Serve provides the HTTPS certificate.
 
-Either way, Tailscale is what the control server uses to reach the agents. Open the link printed by `invite` and create your first passkey. Because `DRIFTWATCH_LOCAL=true`, the Pi's own containers appear right away, with no second container needed.
+Either way, Tailscale is what the control server uses to reach the agents. Open the link printed by `invite` and create your first passkey. Because `DRIFTWATCH_LOCAL=true`, the control machine's own containers appear right away, with no second container needed.
 
-### 4. Agents
+### 3. Agents
 
 In the UI go to **Settings → Agents → Add agent**. You get a `compose.yaml` and a `.env` (or a single inlined file) containing a fresh certificate for that machine. Copy them to the server, add your `TS_AUTHKEY`, and run `docker compose up -d`. The machine turns green within a few seconds.
 

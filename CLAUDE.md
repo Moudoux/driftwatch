@@ -43,9 +43,9 @@ Several crates are newer majors than older training data: rcgen 0.14 (`Issuer`),
 
 ## Testing end to end locally
 
-This machine runs **rootless Docker** (`unix:///run/user/1000/docker.sock`) and has **no buildx**, so the Dockerfile can only be verified in GitHub Actions.
+The examples below assume **rootless Docker** (`unix:///run/user/$UID/docker.sock`; use `/var/run/docker.sock` otherwise). Without buildx, the Dockerfile can only be verified in GitHub Actions.
 
-1. Start the control server with `DRIFTWATCH_MODE=control DRIFTWATCH_DATA_DIR=<scratch>/data DRIFTWATCH_HTTP_LISTEN=127.0.0.1:8080 DRIFTWATCH_LOCAL=true DRIFTWATCH_LOCAL_DOCKER=unix:///run/user/1000/docker.sock`.
+1. Start the control server with `DRIFTWATCH_MODE=control DRIFTWATCH_DATA_DIR=<scratch>/data DRIFTWATCH_HTTP_LISTEN=127.0.0.1:8080 DRIFTWATCH_LOCAL=true DRIFTWATCH_LOCAL_DOCKER=unix:///run/user/$UID/docker.sock`.
 2. Create an invite through a fake TTY: `script -qc "target/release/driftwatch invite" /dev/null` (same env).
 3. `node scripts/e2e/authn.mjs http://localhost:8080 <inviteFile> <scratchDir>` registers a software passkey, signs in, and creates an agent. It writes `agent.env` and `cookie.txt` to the scratch dir; keep them out of the repo.
 4. Start the agent with `agent.env` sourced, `DRIFTWATCH_MODE=agent DRIFTWATCH_LISTEN=127.0.0.1:7443` and the rootless socket.
@@ -62,5 +62,5 @@ Stop test processes by PID: `pkill -f target/release/driftwatch` also matches th
 
 ## Repo conventions
 
-- GitHub: private `Moudoux/driftwatch`. Commit with the repo-local noreply email that is already configured (`git config user.email`).
+- GitHub: public `Moudoux/driftwatch`. Commit with the repo-local noreply email that is already configured (`git config user.email`).
 - CI: `.github/workflows/ci.yml` (UI build, fmt, clippy, tests); `release.yml` builds and pushes the amd64+arm64 image on `main` and `v*` tags (tags also attach binaries to a release).
